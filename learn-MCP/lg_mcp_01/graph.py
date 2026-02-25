@@ -36,19 +36,30 @@ from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, MessagesState, END
 from langgraph.prebuilt import ToolNode, tools_condition
 
-GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """You are an IT support assistant. When a user reports a problem:
+SYSTEM_PROMPT = """You are an IT support assistant with access to a ticket management system.
 
-1. Call search_tickets with a relevant keyword to check for existing tickets.
-2. Call get_user_profile with the user's email to retrieve their SLA tier.
-3. If no duplicate ticket exists, call create_ticket with an appropriate priority:
-   - critical SLA tier  → high priority
-   - high SLA tier      → high priority
-   - standard SLA tier  → medium or low priority
-4. Summarise what you did: existing ticket found OR new ticket ID, priority, and next steps.
+Available tools and when to use them:
+  - search_tickets        : ALWAYS call this first with a relevant keyword to check for duplicates.
+  - get_user_profile      : Call this to look up a user's SLA tier by email before creating a ticket.
+  - create_ticket         : Create a new ticket ONLY when no duplicate exists. Priority rules:
+                              critical SLA tier → high priority
+                              high SLA tier     → high priority
+                              standard SLA tier → medium or low priority
+  - update_ticket_status  : Change a ticket's status (open → in_progress → resolved).
+                            Use this when the user says their issue is fixed or needs escalation.
+  - list_open_tickets     : Use this when a user asks for a summary of active tickets.
+  - add_comment           : Record notes, workarounds, or investigation details on a ticket.
 
-Always complete all necessary tool calls before giving your final answer."""
+Decision logic:
+  - If the user reports a NEW problem  → search → get profile → create ticket → summarise
+  - If a duplicate is found            → report the existing ticket ID, skip creation
+  - If the user says issue is resolved → update_ticket_status to "resolved" → add_comment with resolution note
+  - If the user asks "what's open?"   → list_open_tickets → summarise
+
+Always complete all necessary tool calls before giving your final answer.
+Always include the ticket ID in your response."""
 
 
 def build_graph(tools: list[BaseTool], api_key: str) -> StateGraph:
@@ -82,8 +93,19 @@ def build_graph(tools: list[BaseTool], api_key: str) -> StateGraph:
     # LangGraph automatically appends the returned message to state via
     # the MessagesState reducer (add_messages).
     def agent_node(state: MessagesState) -> dict:
+        iteration = sum(1 for m in state["messages"] if m.type == "ai") + 1
+        print(f"\n  [agent] iteration {iteration} — sending {len(state['messages'])} messages to LLM...")
+
         messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
         response = llm_with_tools.invoke(messages)
+
+        if response.tool_calls:
+            names = [tc["name"] for tc in response.tool_calls]
+            print(f"  [agent] LLM requests tool call(s): {names}")
+        else:
+            preview = (response.content[:80] + "...") if len(response.content) > 80 else response.content
+            print(f"  [agent] LLM final answer: \"{preview}\"")
+
         return {"messages": [response]}
 
     # ── Tool node ─────────────────────────────────────────────────────────────

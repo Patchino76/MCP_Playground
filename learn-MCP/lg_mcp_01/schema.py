@@ -27,3 +27,4 @@ class Ticket(BaseModel):
     priority: Literal["low", "medium", "high"]
     status: Literal["open", "in_progress", "resolved"] = "open"
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    comments: list[dict] = Field(default_factory=list)

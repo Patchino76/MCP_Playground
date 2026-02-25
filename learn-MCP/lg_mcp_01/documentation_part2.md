@@ -1,5 +1,6 @@
 # lg_mcp_01 — IT Support Ticket Assistant
-## Part 2: Information Flow, Execution Traces & Extension Ideas
+
+## Part 2: Information Flow, Execution Traces, Testing & Extension
 
 > **Part 1** covers architecture, key concepts, and file-by-file breakdown.
 
@@ -7,20 +8,28 @@
 
 ## Table of Contents
 
-5. [Information Flow — End to End](#5-information-flow--end-to-end)
-6. [The Agentic Loop — ch06 vs LangGraph](#6-the-agentic-loop--ch06-vs-langgraph)
-7. [Graph Execution Traces](#7-graph-execution-traces)
-   - 7.1 [Scenario 1 — New ticket (Alice)](#71-scenario-1--new-ticket-alice)
-   - 7.2 [Scenario 2 — Duplicate found (Bob)](#72-scenario-2--duplicate-found-bob)
-   - 7.3 [Scenario 3 — New ticket, critical SLA (Carol)](#73-scenario-3--new-ticket-critical-sla-carol)
-8. [The MCP ↔ LangGraph Bridge in Detail](#8-the-mcp--langgraph-bridge-in-detail)
-9. [State Evolution Through a Full Run](#9-state-evolution-through-a-full-run)
-10. [How to Run](#10-how-to-run)
-11. [Extension Ideas](#11-extension-ideas)
+1. [Information Flow — End to End](#1-information-flow--end-to-end)
+2. [The Agentic Loop — ch06 vs LangGraph](#2-the-agentic-loop--ch06-vs-langgraph)
+3. [Graph Execution Traces — All 6 Scenarios](#3-graph-execution-traces--all-6-scenarios)
+   - 3.1 [Scenario 1 — New ticket (Alice, high SLA)](#31-scenario-1--new-ticket-alice-high-sla)
+   - 3.2 [Scenario 2 — Duplicate found (Bob, VPN)](#32-scenario-2--duplicate-found-bob-vpn)
+   - 3.3 [Scenario 3 — New ticket (Carol, critical SLA)](#33-scenario-3--new-ticket-carol-critical-sla)
+   - 3.4 [Scenario 4 — Resolve ticket + add comment (Bob)](#34-scenario-4--resolve-ticket--add-comment-bob)
+   - 3.5 [Scenario 5 — List open tickets (IT manager)](#35-scenario-5--list-open-tickets-it-manager)
+   - 3.6 [Scenario 6 — Add comment to existing ticket (Alice)](#36-scenario-6--add-comment-to-existing-ticket-alice)
+   - 3.7 [Scenario comparison table](#37-scenario-comparison-table)
+4. [State Evolution Through a Full Run](#4-state-evolution-through-a-full-run)
+5. [How to Run and Test](#5-how-to-run-and-test)
+   - 5.1 [Prerequisites](#51-prerequisites)
+   - 5.2 [Run the demo (main.py)](#52-run-the-demo-mainpy)
+   - 5.3 [Interactive REPL (test_interactive.py)](#53-interactive-repl-test_interactivepy)
+   - 5.4 [Inspect the MCP server directly](#54-inspect-the-mcp-server-directly)
+   - 5.5 [What to look for in the output](#55-what-to-look-for-in-the-output)
+6. [Extension Ideas](#6-extension-ideas)
 
 ---
 
-## 5. Information Flow — End to End
+## 1. Information Flow — End to End
 
 Here is the complete data flow for a single user message, from input to final answer:
 
@@ -127,7 +136,7 @@ User types: "My screen is flickering. Email: alice@company.com"
 
 ---
 
-## 6. The Agentic Loop — ch06 vs LangGraph
+## 2. The Agentic Loop — ch06 vs LangGraph
 
 This is the most important conceptual comparison in the project.
 
@@ -161,6 +170,7 @@ async def chat(session, groq_client, groq_tools, user_message):
 ```
 
 **Problems with this approach at scale:**
+
 - Loop logic is tangled with tool execution logic — hard to modify one without touching the other
 - Adding a new step (e.g., log every tool call to a DB) requires modifying the loop body
 - No built-in state persistence for multi-turn conversations
@@ -177,13 +187,13 @@ graph.add_edge("tools", "agent")
 
 The loop is expressed as **graph topology**, not imperative code. Each concern is isolated:
 
-| Concern | Where it lives |
-|---------|----------------|
-| LLM reasoning | `agent_node` function |
-| Tool execution | `ToolNode` (pre-built) |
-| Loop control | `tools_condition` (pre-built) |
-| State management | `MessagesState` + `add_messages` reducer |
-| History accumulation | Automatic via reducer |
+| Concern              | Where it lives                           |
+| -------------------- | ---------------------------------------- |
+| LLM reasoning        | `agent_node` function                    |
+| Tool execution       | `ToolNode` (pre-built)                   |
+| Loop control         | `tools_condition` (pre-built)            |
+| State management     | `MessagesState` + `add_messages` reducer |
+| History accumulation | Automatic via reducer                    |
 
 **Adding a new step** (e.g., a logging node after every tool call) means:
 
@@ -215,212 +225,210 @@ while True:                        graph topology:
   # loop
 ```
 
-The LangGraph version has **3 lines** where ch06 has **~15 lines**. More importantly, those 3 lines are *declarative* — they describe the shape of the agent, not the mechanics of running it.
+The LangGraph version has **3 lines** where ch06 has **~15 lines**. More importantly, those 3 lines are _declarative_ — they describe the shape of the agent, not the mechanics of running it.
 
 ---
 
-## 7. Graph Execution Traces
+## 3. Graph Execution Traces — All 6 Scenarios
 
-### 7.1 Scenario 1 — New ticket (Alice)
+Each trace shows exactly which nodes execute, which MCP tools are called, and how `state["messages"]` grows.
+
+### 3.1 Scenario 1 — New ticket (Alice, high SLA)
 
 **Input:** `"My laptop screen keeps flickering... alice@company.com"`
 
-```
-Iteration 1
-  agent_node receives:
-    [SystemMessage, HumanMessage]
-  LLM responds:
-    AIMessage(tool_calls=[search_tickets(keyword="flickering")])
-  tools_condition → "tools"
+```python
+Iteration 1  [agent node]
+  receives:   [SystemMessage, HumanMessage]
+  LLM output: AIMessage(tool_calls=[search_tickets(keyword="flickering")])
+  → tools_condition: "tools"
 
-  tool_node executes:
-    search_tickets("flickering") → MCP → {match_count: 0, tickets: []}
-  ToolMessage appended to state
-  edge → "agent"
+  [tool node] search_tickets("flickering")
+  → HTTP POST /mcp → {match_count: 0, tickets: []}
+  → ToolMessage appended → edge back to "agent"
 
-Iteration 2
-  agent_node receives:
-    [SystemMessage, HumanMessage, AIMessage(tc1), ToolMessage(r1)]
-  LLM responds:
-    AIMessage(tool_calls=[get_user_profile(email="alice@company.com")])
-  tools_condition → "tools"
+Iteration 2  [agent node]
+  receives:   [Human, AI(tc1), Tool(r1)]   +SystemMessage prepended
+  LLM output: AIMessage(tool_calls=[get_user_profile(email="alice@company.com")])
+  → tools_condition: "tools"
 
-  tool_node executes:
-    get_user_profile("alice@company.com") → MCP → {sla_tier: "high", ...}
-  ToolMessage appended to state
-  edge → "agent"
+  [tool node] get_user_profile("alice@company.com")
+  → HTTP POST /mcp → {sla_tier: "high", department: "Engineering"}
+  → ToolMessage appended → edge back to "agent"
 
-Iteration 3
-  agent_node receives:
-    [SystemMessage, HumanMessage, AIMessage(tc1), ToolMessage(r1),
-     AIMessage(tc2), ToolMessage(r2)]
-  LLM responds:
-    AIMessage(tool_calls=[create_ticket(title=..., priority="high")])
-  tools_condition → "tools"
+Iteration 3  [agent node]
+  receives:   [Human, AI(tc1), Tool(r1), AI(tc2), Tool(r2)]
+  LLM output: AIMessage(tool_calls=[create_ticket(priority="high", ...)])
+  → tools_condition: "tools"
 
-  tool_node executes:
-    create_ticket(...) → MCP → {id: "T-37DFCE", status: "open", ...}
-  ToolMessage appended to state
-  edge → "agent"
+  [tool node] create_ticket(title=..., priority="high", ...)
+  → HTTP POST /mcp → {id: "T-37DFCE", status: "open", created_at: ...}
+  → ToolMessage appended → edge back to "agent"
 
-Iteration 4
-  agent_node receives: all 7 messages above
-  LLM responds:
-    AIMessage(content="I've filed ticket T-37DFCE (priority: High)...")
-    ← no tool_calls
-  tools_condition → END
+Iteration 4  [agent node]
+  receives:   [Human, AI(tc1), Tool(r1), AI(tc2), Tool(r2), AI(tc3), Tool(r3)]
+  LLM output: AIMessage(content="I've filed ticket T-37DFCE (high priority)...")
+              ← no tool_calls
+  → tools_condition: END
 
-Final state["messages"]: 8 messages
-  [Human, AI(tc), Tool, AI(tc), Tool, AI(tc), Tool, AI(final)]
-Graph iterations: 4
-MCP calls: 3
+Summary: 4 graph iterations | 3 MCP calls | 8 messages in final state
+Path:    search → get_profile → create_ticket → final_answer
 ```
 
-### 7.2 Scenario 2 — Duplicate found (Bob)
+### 3.2 Scenario 2 — Duplicate found (Bob, VPN)
 
 **Input:** `"My VPN keeps dropping every 30 minutes... bob@company.com"`
 
-```
-Iteration 1
-  agent_node receives:
-    [SystemMessage, HumanMessage]
-  LLM responds:
-    AIMessage(tool_calls=[search_tickets(keyword="VPN")])
-  tools_condition → "tools"
+```python
+Iteration 1  [agent node]
+  receives:   [SystemMessage, HumanMessage]
+  LLM output: AIMessage(tool_calls=[search_tickets(keyword="VPN")])
+  → tools_condition: "tools"
 
-  tool_node executes:
-    search_tickets("VPN") → MCP → {
+  [tool node] search_tickets("VPN")
+  → HTTP POST /mcp → {
       match_count: 1,
-      tickets: [{id: "T-AA1B2C", title: "VPN disconnects every 30 minutes", ...}]
+      tickets: [{id: "T-AA1B2C", title: "VPN disconnects every 30 minutes",
+                 status: "open", priority: "high"}]
     }
-  ToolMessage appended to state
-  edge → "agent"
+  → ToolMessage appended → edge back to "agent"
 
-Iteration 2
-  agent_node receives:
-    [SystemMessage, HumanMessage, AIMessage(tc1), ToolMessage(r1)]
-  LLM responds:
-    AIMessage(content="There's already an open ticket T-AA1B2C for this issue...")
-    ← no tool_calls — agent decided the duplicate is sufficient
-  tools_condition → END
+Iteration 2  [agent node]
+  receives:   [Human, AI(tc1), Tool(r1)]
+  LLM output: AIMessage(content="There's already ticket T-AA1B2C open for this...")
+              ← no tool_calls (LLM followed system prompt: skip create if duplicate)
+  → tools_condition: END
 
-Final state["messages"]: 4 messages
-  [Human, AI(tc), Tool, AI(final)]
-Graph iterations: 2   ← half as many as Scenario 1
-MCP calls: 1          ← no get_user_profile, no create_ticket
+Summary: 2 graph iterations | 1 MCP call | 4 messages in final state
+Path:    search → duplicate found → final_answer  (short-circuit)
 ```
 
-**This is the key branching behaviour.** The agent saw a duplicate and stopped. The branching logic lives entirely in the LLM's reasoning, guided by the system prompt instruction:
-> *"If no duplicate ticket exists, call create_ticket..."*
+> **Key insight:** The branching logic lives in the LLM's reasoning (guided by the system prompt), NOT in the graph topology. The same `tools_condition` router runs for every scenario — it just sees no `tool_calls` in iteration 2, so it routes to `END`. The graph is identical; the LLM's decision is different.
 
-The graph topology did not change — the same `tools_condition` router was used. The LLM simply chose not to emit `tool_calls` in iteration 2.
+### 3.3 Scenario 3 — New ticket (Carol, critical SLA)
 
-### 7.3 Scenario 3 — New ticket, critical SLA (Carol)
+**Input:** `"The office printer on floor 3 is offline... carol@company.com"`
 
-**Input:** `"The office printer on floor 3 is completely offline... carol@company.com"`
+```python
+Iteration 1  search_tickets("printer") → {match_count: 0}
+Iteration 2  get_user_profile("carol@company.com") → {sla_tier: "critical", dept: "IT"}
+Iteration 3  create_ticket(priority="high") → {id: "T-3D0769"}
+             Note: "critical" SLA maps to "high" priority per system prompt rules
+Iteration 4  Final answer: "Ticket T-3D0769 created (priority: High)..."
 
-```
-Iteration 1
-  search_tickets("printer") → {match_count: 0}
-
-Iteration 2
-  get_user_profile("carol@company.com") → {sla_tier: "critical", department: "IT"}
-
-Iteration 3
-  create_ticket(priority="high") → {id: "T-3D0769"}
-  Note: "critical" SLA → agent correctly assigns "high" priority
-
-Iteration 4
-  Final answer: "Ticket T-3D0769 created (priority: High)..."
-  tools_condition → END
-
-Graph iterations: 4
-MCP calls: 3
+Summary: 4 graph iterations | 3 MCP calls
+Path:    search → get_profile → create_ticket → final_answer
 ```
 
-**Comparison across scenarios:**
+### 3.4 Scenario 4 — Resolve ticket + add comment (Bob)
 
-| Scenario | Graph iterations | MCP calls | Reason |
-|----------|-----------------|-----------|--------|
-| Alice (new) | 4 | 3 | Full flow: search → profile → create |
-| Bob (duplicate) | 2 | 1 | Short-circuit: search found match |
-| Carol (new, critical) | 4 | 3 | Full flow, critical SLA → high priority |
+**Input:** `"VPN issue is fixed. Please mark T-AA1B2C resolved. Fix was a gateway restart."`
+
+```python
+Iteration 1  [agent node]
+  LLM output: AIMessage(tool_calls=[
+    update_ticket_status(ticket_id="T-AA1B2C", status="resolved")
+  ])
+
+  [tool node] update_ticket_status("T-AA1B2C", "resolved")
+  → HTTP POST /mcp → {id: "T-AA1B2C", old_status: "open", new_status: "resolved"}
+  → ToolMessage appended → edge back to "agent"
+
+Iteration 2  [agent node]
+  LLM output: AIMessage(tool_calls=[
+    add_comment(ticket_id="T-AA1B2C", comment="Resolved via gateway restart")
+  ])
+
+  [tool node] add_comment("T-AA1B2C", "Resolved via gateway restart")
+  → HTTP POST /mcp → {id: "T-AA1B2C", total_comments: 1, timestamp: "2026-..."}
+  → ToolMessage appended → edge back to "agent"
+
+Iteration 3  [agent node]
+  LLM output: AIMessage(content="Ticket T-AA1B2C marked resolved. Comment added.")
+              ← no tool_calls
+  → tools_condition: END
+
+Summary: 3 graph iterations | 2 MCP calls | 6 messages in final state
+Path:    update_status → add_comment → final_answer
+Tools:   update_ticket_status, add_comment  ← these were NOT available in the original 2-tool version
+```
+
+### 3.5 Scenario 5 — List open tickets (IT manager)
+
+**Input:** `"Show me all currently open high-priority support tickets."`
+
+```python
+Iteration 1  [agent node]
+  LLM output: AIMessage(tool_calls=[
+    list_open_tickets(priority_filter="high")
+  ])
+
+  [tool node] list_open_tickets("high")
+  → HTTP POST /mcp → {
+      priority_filter: "high",
+      count: 1,
+      tickets: [{id: "T-3D0769", title: "Printer offline floor 3",
+                 status: "open", priority: "high", user_email: "carol@company.com"}]
+    }
+  → ToolMessage appended → edge back to "agent"
+
+Iteration 2  [agent node]
+  LLM output: AIMessage(content="There is 1 open high-priority ticket: T-3D0769...")
+              ← no tool_calls
+  → tools_condition: END
+
+Summary: 2 graph iterations | 1 MCP call | 4 messages in final state
+Path:    list_open_tickets → final_answer
+```
+
+### 3.6 Scenario 6 — Add comment to existing ticket (Alice)
+
+**Input:** `"Add a note to T-DD3E4F: issue also affects calendar sync. alice@company.com"`
+
+```python
+Iteration 1  [agent node]
+  LLM output: AIMessage(tool_calls=[
+    search_tickets(keyword="Outlook")   ← LLM verifies the ticket exists first
+  ])
+
+  [tool node] search_tickets("Outlook")
+  → HTTP POST /mcp → {match_count: 1, tickets: [{id: "T-DD3E4F", ...}]}
+  → ToolMessage appended → edge back to "agent"
+
+Iteration 2  [agent node]
+  LLM output: AIMessage(tool_calls=[
+    add_comment(ticket_id="T-DD3E4F", comment="Issue also affects calendar sync")
+  ])
+
+  [tool node] add_comment("T-DD3E4F", "Issue also affects calendar sync")
+  → HTTP POST /mcp → {id: "T-DD3E4F", total_comments: 1, timestamp: "2026-..."}
+  → ToolMessage appended → edge back to "agent"
+
+Iteration 3  [agent node]
+  LLM output: AIMessage(content="Added note to ticket T-DD3E4F: ...")
+              ← no tool_calls
+  → tools_condition: END
+
+Summary: 3 graph iterations | 2 MCP calls | 6 messages in final state
+Path:    search → add_comment → final_answer
+```
+
+### 3.7 Scenario Comparison Table
+
+| #   | Scenario                         | Graph iterations | MCP calls | Tools used                    |
+| --- | -------------------------------- | :--------------: | :-------: | ----------------------------- |
+| 1   | Alice — new ticket, high SLA     |        4         |     3     | search → get_profile → create |
+| 2   | Bob — VPN duplicate              |        2         |     1     | search (short-circuit)        |
+| 3   | Carol — new ticket, critical SLA |        4         |     3     | search → get_profile → create |
+| 4   | Bob — resolve + comment          |        3         |     2     | update_status → add_comment   |
+| 5   | IT manager — list open           |        2         |     1     | list_open_tickets             |
+| 6   | Alice — add note                 |        3         |     2     | search → add_comment          |
+
+Scenarios 1 and 3 exercise the **full creation path**. Scenario 2 exercises the **short-circuit path**. Scenarios 4–6 exercise the three new tools added in this iteration.
 
 ---
 
-## 8. The MCP ↔ LangGraph Bridge in Detail
-
-This is the most architecturally interesting part of the project. Two different tool interfaces need to be unified.
-
-```
-MCP world                          LangGraph world
-─────────────────────────────────────────────────────────
-types.Tool                    →    BaseTool (StructuredTool)
-  .name (str)                 →      .name (str)
-  .description (str)          →      .description (str)
-  .inputSchema (JSON Schema)  →      .args_schema (Pydantic model)
-  session.call_tool()         →      ._call(**kwargs) → str
-```
-
-### Step 1 — JSON Schema → Pydantic model
-
-LangGraph's `ToolNode` validates tool arguments using the `args_schema` Pydantic model before calling the tool. MCP tools carry their schema as a plain JSON Schema dict. We convert it:
-
-```python
-def _json_schema_to_pydantic(schema: dict, model_name: str) -> Type[BaseModel]:
-    properties = schema.get("properties", {})
-    required = set(schema.get("required", []))
-
-    field_definitions = {}
-    for prop_name, prop_meta in properties.items():
-        json_type = prop_meta.get("type", "string")
-        python_type = int if json_type == "integer" else str
-        if prop_name in required:
-            field_definitions[prop_name] = (python_type, ...)   # required
-        else:
-            field_definitions[prop_name] = (python_type, None)  # optional
-
-    return create_model(model_name, **field_definitions)
-```
-
-For `search_tickets`, this produces the equivalent of:
-```python
-class search_tickets(BaseModel):
-    keyword: str   # required
-```
-
-### Step 2 — Async closure over the MCP session
-
-```python
-def mcp_tool_to_langchain(tool, session):
-
-    async def _call(**kwargs) -> str:
-        result = await session.call_tool(name=tool.name, arguments=kwargs)
-        if result.isError:
-            return f"Error: {result.content[0].text}"
-        return result.content[0].text
-
-    return StructuredTool.from_function(
-        coroutine=_call,
-        name=tool.name,
-        description=tool.description,
-        args_schema=args_schema,
-    )
-```
-
-`_call` is a **closure** — it captures `tool.name` and `session` from the enclosing scope. Each of the 3 tools gets its own `_call` function with its own captured `tool.name`. When LangGraph calls `structured_tool.invoke({"keyword": "VPN"})`, it:
-
-1. Validates `{"keyword": "VPN"}` against the `args_schema` Pydantic model
-2. Calls `_call(keyword="VPN")`
-3. `_call` fires `session.call_tool(name="search_tickets", arguments={"keyword": "VPN"})`
-4. The MCP server receives the HTTP POST and executes `search_tickets`
-5. The result flows back as a string
-
-**LangGraph never knows it's talking to MCP.** From LangGraph's perspective, it's just calling a `StructuredTool` that returns a string.
-
----
-
-## 9. State Evolution Through a Full Run
+## 4. State Evolution Through a Full Run
 
 Here is how `state["messages"]` grows step by step during Scenario 1 (Alice). This shows exactly what the `add_messages` reducer does on each iteration.
 
@@ -535,17 +543,27 @@ main.py reads: final_state["messages"][-1].content  ← the last AIMessage
 ```
 
 **Key observations:**
+
 - The `add_messages` reducer means each node only returns `{"messages": [new_message]}` — it never needs to reconstruct the full history
 - The `tool_call_id` on each `ToolMessage` links it back to the specific `ToolCall` in the preceding `AIMessage` — this is how the LLM knows which result belongs to which call
 - The `SystemMessage` is NOT stored in state — it is prepended fresh on every `agent_node` call
 
 ---
 
-## 10. How to Run
+## 5. How to Run and Test
 
-### Prerequisites
+### 5.1 Prerequisites
 
-All dependencies are managed by `uv`. From the project root:
+Copy `.env.example` to `.env` and add your Groq API key:
+
+```powershell
+copy .env.example .env
+# Then edit .env and set GROQ_API_KEY=your_key_here
+```
+
+Get a free key at https://console.groq.com
+
+All Python dependencies are managed by `uv`:
 
 ```powershell
 uv sync
@@ -553,90 +571,148 @@ uv sync
 
 This installs: `mcp`, `starlette`, `uvicorn`, `langgraph`, `langchain-groq`, `langchain-core`, `python-dotenv`, `pydantic`.
 
-### Step 1 — Start the MCP server
+### 5.2 Run the demo (main.py)
 
-Open a terminal in `lg_mcp_01/`:
+**Terminal 1 — start the MCP server:**
 
 ```powershell
 uv run python server.py
 ```
 
-Expected output:
+Expected:
+
 ```
-INFO:     Started server process [XXXXX]
-INFO:     Waiting for application startup.
+INFO:     Uvicorn running on http://0.0.0.0:8001
 Server is running on http://localhost:8001/mcp
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
 ```
 
-### Step 2 — Run the agent
-
-Open a second terminal in `lg_mcp_01/`:
+**Terminal 2 — run all 6 scenarios:**
 
 ```powershell
 uv run python main.py
 ```
 
-Expected output:
+Expected output (abbreviated):
+
 ```
 Connected to MCP server at http://localhost:8001/mcp
 
-Tools loaded from MCP server:
-  - search_tickets: Search open support tickets by keyword...
-  - create_ticket: Create a new IT support ticket...
-  - get_user_profile: Retrieve a user's profile by their email address...
+  6 tools loaded from MCP server:
+    ✓ search_tickets
+    ✓ create_ticket
+    ✓ update_ticket_status
+    ✓ list_open_tickets
+    ✓ add_comment
+    ✓ get_user_profile
 
-═══════════════════════════════════════════════════════════════════
-  USER (alice@company.com): My laptop screen keeps flickering...
-═══════════════════════════════════════════════════════════════════
+═════════════════════════════════════════════════════════════════
+  USER (Scenario 1 — New ticket (Alice, high SLA)): My laptop...
+═════════════════════════════════════════════════════════════════
 
-  ASSISTANT: I checked for existing tickets... filed ticket T-XXXXXX...
+  [agent] iteration 1 — sending 1 messages to LLM...
+  [agent] LLM requests tool call(s): ['search_tickets']
+  [agent] iteration 2 — sending 3 messages to LLM...
+  [agent] LLM requests tool call(s): ['get_user_profile']
+  [agent] iteration 3 — sending 5 messages to LLM...
+  [agent] LLM requests tool call(s): ['create_ticket']
+  [agent] iteration 4 — sending 7 messages to LLM...
+  [agent] LLM final answer: "I've filed ticket T-37DFCE..."
 
-═══════════════════════════════════════════════════════════════════
-  USER (bob@company.com): Hi, my VPN keeps dropping...
-═══════════════════════════════════════════════════════════════════
+  ASSISTANT: I've filed ticket T-37DFCE (high priority)...
 
-  ASSISTANT: There's already an open ticket T-AA1B2C for this issue...
+═════════════════════════════════════════════════════════════════
+  USER (Scenario 2 — Duplicate found (Bob, VPN)): Hi, my VPN...
+═════════════════════════════════════════════════════════════════
 
-...
+  [agent] iteration 1 — sending 1 messages to LLM...
+  [agent] LLM requests tool call(s): ['search_tickets']
+  [agent] iteration 2 — sending 3 messages to LLM...
+  [agent] LLM final answer: "There's already ticket T-AA1B2C..."
+
+  ASSISTANT: There's already an open ticket T-AA1B2C...
 ```
 
-### Inspecting the MCP server directly
+Each `[agent]` line is printed by the verbose logging added to `agent_node` — you can see the ReAct loop executing in real time.
 
-You can use the MCP Inspector to browse tools and call them manually:
+### 5.3 Interactive REPL (test_interactive.py)
+
+For manual testing, use the interactive mode:
+
+```powershell
+uv run python test_interactive.py
+```
+
+With `--verbose` flag to see the full `MessagesState` after each turn:
+
+```powershell
+uv run python test_interactive.py --verbose
+```
+
+Sample session:
+
+```
+  IT Support Agent — Interactive Mode
+  Type your message and press Enter. Type 'quit' to exit.
+
+  YOU: Show me all open tickets
+
+  [agent] iteration 1 — sending 1 messages to LLM...
+  [agent] LLM requests tool call(s): ['list_open_tickets']
+  [agent] iteration 2 — sending 3 messages to LLM...
+  [agent] LLM final answer: "There are currently 2 open tickets..."
+
+  ASSISTANT: There are currently 2 open tickets...
+
+  YOU: Mark T-AA1B2C as resolved
+
+  [agent] iteration 1...
+  [agent] LLM requests tool call(s): ['update_ticket_status']
+  ...
+```
+
+**Suggested test inputs** to exercise every tool:
+
+| Input                                                 | Tools triggered               |
+| ----------------------------------------------------- | ----------------------------- |
+| `"My screen is flickering. Email: alice@company.com"` | search → get_profile → create |
+| `"My VPN keeps dropping. Email: bob@company.com"`     | search → duplicate found      |
+| `"Show me all open high-priority tickets"`            | list_open_tickets             |
+| `"Mark ticket T-AA1B2C as resolved"`                  | update_status → add_comment   |
+| `"Add a note to T-DD3E4F: issue affects Teams too"`   | add_comment                   |
+
+### 5.4 Inspect the MCP server directly
+
+Use the MCP Inspector to browse all 6 tools and call them manually without the agent:
 
 ```powershell
 npx @modelcontextprotocol/inspector http://localhost:8001/mcp
 ```
 
+This lets you verify the server is working independently of LangGraph.
+
+### 5.5 What to look for in the output
+
+| What you see                               | What it means                                                               |
+| ------------------------------------------ | --------------------------------------------------------------------------- |
+| `[agent] iteration N — sending X messages` | A new ReAct loop iteration; X grows by 2 each round (AI + Tool)             |
+| `[agent] LLM requests tool call(s): [...]` | LLM decided to act — not done yet                                           |
+| `[agent] LLM final answer: "..."`          | LLM produced a message with no tool_calls — `tools_condition` routes to END |
+| Scenario 2 ends after 2 iterations         | Duplicate detected — short-circuit path taken                               |
+| Scenario 4 ends after 3 iterations         | Two sequential tool calls (update + comment) then final answer              |
+
 ---
 
-## 11. Extension Ideas
+## 6. Extension Ideas
 
 The project is deliberately minimal. Here are natural next steps, ordered by complexity:
 
-### Easy — add a new tool
-
-Add `list_open_tickets` to `tools/tickets.py` that returns all open tickets. Then add it to `tools/__init__.py`. The server and client pick it up automatically — zero other changes needed.
-
 ### Easy — add a new user
 
-Add a fourth user to `user_profiles` in `data.py`. Test with a new scenario in `main.py`.
+Add a fourth user to `user_profiles` in `data.py`. Test by typing their email in `test_interactive.py`.
 
-### Medium — add a `resolve_ticket` tool
+### Easy — add a domain-specific tool
 
-```python
-async def resolve_ticket(arguments: dict) -> list[types.TextContent]:
-    ticket_id = arguments.get("ticket_id")
-    ticket = next((t for t in tickets if t.id == ticket_id), None)
-    if not ticket:
-        raise ValueError(f"Ticket {ticket_id} not found")
-    ticket.status = "resolved"
-    return [types.TextContent(type="text", text=f"Ticket {ticket_id} resolved.")]
-```
-
-Now the agent can both create and close tickets in a single conversation.
+Add a `get_ticket_by_id` tool to `tools/tickets.py` following the 3-part pattern. Add one entry to `tools/__init__.py`. Server and client pick it up automatically — zero other file changes needed.
 
 ### Medium — add a logging node to the graph
 
@@ -644,19 +720,19 @@ Now the agent can both create and close tickets in a single conversation.
 def log_node(state: MessagesState) -> dict:
     last = state["messages"][-1]
     print(f"[LOG] Tool result: {last.content[:80]}")
-    return {}   # no new messages, just a side effect
+    return {}   # no new messages — side effect only
 
+# In build_graph():
 graph.add_node("logger", log_node)
-graph.add_edge("tools", "logger")
+graph.add_edge("tools", "logger")   # replace: graph.add_edge("tools", "agent")
 graph.add_edge("logger", "agent")
-# remove: graph.add_edge("tools", "agent")
 ```
 
-This demonstrates how LangGraph makes it trivial to inject steps into the loop without touching existing nodes.
+`agent_node` and `tool_node` are completely untouched. This demonstrates LangGraph's composability.
 
-### Medium — add memory across scenarios
+### Medium — add multi-turn memory with a checkpointer
 
-Replace `graph.ainvoke()` with a checkpointer so the agent remembers previous conversations:
+Replace `graph.ainvoke()` with a `MemorySaver` checkpointer so the agent remembers previous turns:
 
 ```python
 from langgraph.checkpoint.memory import MemorySaver
@@ -664,23 +740,32 @@ from langgraph.checkpoint.memory import MemorySaver
 checkpointer = MemorySaver()
 graph = graph_builder.compile(checkpointer=checkpointer)
 
-# Each scenario uses the same thread_id to share memory
-await graph.ainvoke(input, config={"configurable": {"thread_id": "alice"}})
+# Same thread_id = shared memory across turns
+config = {"configurable": {"thread_id": "alice-session"}}
+await graph.ainvoke({"messages": [HumanMessage("I reported a bug yesterday")]}, config)
+await graph.ainvoke({"messages": [HumanMessage("What was my ticket ID?")]}, config)
+# ↑ agent remembers the previous turn's ticket ID
 ```
 
-### Hard — add a human-in-the-loop approval step
+### Hard — add human-in-the-loop approval before creating tickets
 
-Use LangGraph's `interrupt_before` to pause the graph before `create_ticket` and ask a human to confirm:
+Use LangGraph's `interrupt_before` to pause the graph and ask a human to confirm before any tool node runs:
 
 ```python
 graph = graph_builder.compile(
     checkpointer=checkpointer,
     interrupt_before=["tools"],
 )
-```
 
-The graph pauses, you inspect the pending tool call, then resume with `graph.invoke(None, config)`.
+# First call — graph pauses before tools node
+state = await graph.ainvoke(input, config)
+pending_calls = state["messages"][-1].tool_calls
+print(f"Agent wants to call: {[c['name'] for c in pending_calls]}")
+
+# Human approves — resume
+await graph.ainvoke(None, config)
+```
 
 ### Hard — replace in-memory store with a real database
 
-Replace the `data.py` lists with SQLite queries using `aiosqlite`. The tool handlers stay identical — only the data access layer changes. This is the natural path to a production system.
+Replace the `data.py` lists with `aiosqlite` queries. The tool handlers (in `tools/tickets.py`) stay identical — only the data access layer changes. This is the natural path to a production system.

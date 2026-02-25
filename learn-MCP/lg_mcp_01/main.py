@@ -23,7 +23,7 @@ and gets back the final state. The graph handles all iterations internally.
 import asyncio
 import os
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from langchain_core.messages import HumanMessage
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -31,40 +31,69 @@ from mcp.client.streamable_http import streamable_http_client
 from client import get_mcp_tools
 from graph import build_graph
 
-load_dotenv()
+load_dotenv(find_dotenv(usecwd=True))
 
 SERVER_URL = "http://localhost:8001/mcp"
 
 # ── Demo scenarios ─────────────────────────────────────────────────────────────
-# Three realistic user reports that exercise different graph paths:
+# Six scenarios that exercise every graph path and every tool:
 #
 #   Scenario 1 — alice@company.com reports a NEW issue (screen flickering).
-#                No duplicate in the ticket store → agent creates a new ticket.
-#                Alice has "high" SLA → expect high priority.
+#                No duplicate → agent creates ticket. Alice = high SLA → high priority.
+#                Tools used: search_tickets, get_user_profile, create_ticket
 #
 #   Scenario 2 — bob@company.com reports a VPN issue.
-#                A VPN ticket already exists (T-AA1B2C) → agent finds duplicate,
-#                reports it, and skips creation.
+#                VPN ticket T-AA1B2C already exists → agent reports duplicate, skips creation.
+#                Tools used: search_tickets
 #
 #   Scenario 3 — carol@company.com reports a NEW issue (printer offline).
-#                No duplicate → agent creates a ticket.
-#                Carol is in IT with "critical" SLA → expect high priority.
+#                No duplicate → agent creates ticket. Carol = critical SLA → high priority.
+#                Tools used: search_tickets, get_user_profile, create_ticket
+#
+#   Scenario 4 — bob@company.com says his VPN issue is now fixed.
+#                Agent resolves ticket T-AA1B2C and adds a resolution comment.
+#                Tools used: update_ticket_status, add_comment
+#
+#   Scenario 5 — IT manager asks for a summary of all open high-priority tickets.
+#                Agent lists active tickets filtered by priority.
+#                Tools used: list_open_tickets
+#
+#   Scenario 6 — alice@company.com adds a note to her existing Outlook ticket.
+#                Agent appends a timestamped comment to T-DD3E4F.
+#                Tools used: search_tickets, add_comment
 
 DEMO_REQUESTS = [
     (
-        "alice@company.com",
+        "Scenario 1 — New ticket (Alice, high SLA)",
         "My laptop screen keeps flickering since yesterday's Windows update. "
         "It's making it impossible to work. My email is alice@company.com.",
     ),
     (
-        "bob@company.com",
+        "Scenario 2 — Duplicate found (Bob, VPN)",
         "Hi, my VPN keeps dropping every 30 minutes or so. "
         "It's been happening since this morning. Email: bob@company.com.",
     ),
     (
-        "carol@company.com",
+        "Scenario 3 — New ticket (Carol, critical SLA)",
         "The office printer on floor 3 is completely offline. "
         "Nobody in IT can print. My email is carol@company.com.",
+    ),
+    (
+        "Scenario 4 — Resolve ticket (Bob, VPN fixed)",
+        "Good news — my VPN issue is completely fixed now after the network team "
+        "restarted the gateway. Please mark ticket T-AA1B2C as resolved and add a note "
+        "that the fix was a gateway restart. My email is bob@company.com.",
+    ),
+    (
+        "Scenario 5 — List open tickets (IT manager)",
+        "Can you show me all the currently open high-priority support tickets? "
+        "I need a quick status overview.",
+    ),
+    (
+        "Scenario 6 — Add comment to existing ticket (Alice)",
+        "I wanted to add a note to my existing Outlook ticket (T-DD3E4F): "
+        "the issue also affects my calendar sync, not just email. "
+        "My email is alice@company.com.",
     ),
 ]
 
