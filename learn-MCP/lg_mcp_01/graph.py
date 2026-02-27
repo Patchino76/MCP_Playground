@@ -36,7 +36,7 @@ from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, MessagesState, END
 from langgraph.prebuilt import ToolNode, tools_condition
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 SYSTEM_PROMPT = """You are an IT support assistant with access to a ticket management system.
 

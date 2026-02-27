@@ -51,7 +51,7 @@ async def server_lifespan(server: Server) -> AsyncIterator[dict]:
 # ── MCP Server ────────────────────────────────────────────────────────────────
 
 server = Server("it-support-server", lifespan=server_lifespan)
-
+ 
 
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:

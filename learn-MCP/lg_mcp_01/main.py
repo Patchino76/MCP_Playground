@@ -22,6 +22,8 @@ and gets back the final state. The graph handles all iterations internally.
 
 import asyncio
 import os
+import sys
+from pathlib import Path
 
 from dotenv import load_dotenv, find_dotenv
 from langchain_core.messages import HumanMessage
@@ -31,7 +33,9 @@ from mcp.client.streamable_http import streamable_http_client
 from client import get_mcp_tools
 from graph import build_graph
 
-load_dotenv(find_dotenv(usecwd=True))
+script_dir = Path(__file__).parent
+env_path = script_dir / ".env"
+load_dotenv(env_path)
 
 SERVER_URL = "http://localhost:8001/mcp"
 
@@ -118,7 +122,8 @@ async def run_scenario(graph, label: str, user_input: str) -> None:
 async def main() -> None:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise RuntimeError("GROQ_API_KEY not found. Add it to lg_mcp_01/.env")
+        print("ERROR: GROQ_API_KEY not found. Copy .env.example to .env and add your key.")
+        sys.exit(1)
 
     async with streamable_http_client(SERVER_URL) as (read, write, _):
         async with ClientSession(read, write) as session:

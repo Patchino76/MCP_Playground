@@ -35,6 +35,7 @@ import asyncio
 import os
 import sys
 import argparse
+from pathlib import Path
 
 from dotenv import load_dotenv, find_dotenv
 from langchain_core.messages import HumanMessage
@@ -44,7 +45,10 @@ from mcp.client.streamable_http import streamable_http_client
 from client import get_mcp_tools
 from graph import build_graph
 
-load_dotenv(find_dotenv(usecwd=True))
+# Load .env from the script's directory
+script_dir = Path(__file__).parent
+env_path = script_dir / ".env"
+load_dotenv(env_path)
 
 SERVER_URL = "http://localhost:8001/mcp"
 
